@@ -4,6 +4,7 @@ class BookMyShowBridge extends BridgeAbstract {
 	const MAINTAINER = 'captn3m0';
 	const NAME = 'BookMyShow Bridge';
 	const URI = 'https://in.bookmyshow.com';
+	const MOVIES_IMAGE_BASE_FORMAT = 'https://in.bmscdn.com/iedb/movies/images/mobile/thumbnail/large/%s.jpg';
 	const DESCRIPTION = 'Returns the latest events on BookMyShow';
 
 	const PLAYS = 'PL';
@@ -1023,12 +1024,30 @@ class BookMyShowBridge extends BridgeAbstract {
 				'values' => array(
 					'Plays' => self::PLAYS,
 					'Events' => self::EVENTS,
-					// 'Movies' => self::MOVIES,
+					'Movies' => self::MOVIES,
 				),
+			),
+			'language' => array(
+				'name' => 'Language',
+				'type' => 'list',
+				'defaultValue' => 'all',
+				'values' => array(
+					'All' => 'all',
+					'Kannada' => 'Kannada',
+					'English' => 'English',
+					'Hindi' => 'Hindi',
+					'Telugu' => 'Telugu',
+					'Tamil' => 'Tamil',
+					'Malayalam' => 'Malayalam',
+					'Gujarati' => 'Gujarati',
+					'Assamese' => 'Assamese',
+				)
 			)
 		)
 	);
 
+	// Headers used in the generated table for Events/Plays
+	// Left is the BMS API Key, and right is the rendered version
 	const TABLE_HEADERS = array(
 		'Genre' => 'Genre',
 		'Language' => 'Language',
@@ -1039,6 +1058,25 @@ class BookMyShowBridge extends BridgeAbstract {
 		'EventSoldOut' => 'Sold Out (Y/N)',
 	);
 
+	// Picked from EventGroup entry for movies
+	// Left is BMS API Ke, and right is the rendered version
+	const MOVIE_TABLE_HEADERS = array(
+		'Duration' => 'Screentime',
+		'EventCensor' => 'Rating',
+	);
+
+	// Picked from the ChildEvents entries inside a Event Group
+	// for Movies
+	// Left is BMS API Key, right is rendered version
+	const INNER_MOVIE_HEADERS = array(
+		'EventLanguage' => 'Language',
+		'EventDimension' => 'Formats',
+		'EventIsAtmosEnabled' => 'Dolby Atmos',
+		'IsMovieClubEnabled' => 'Movie Club'
+	);
+
+	// Primary URL for fetching information
+	// The city information is passed via a cookie
 	const URL_PREFIX = 'https://in.bookmyshow.com/serv/getData?cmd=QUICKBOOK&type=';
 
 	private function makeUrl($category){
@@ -1052,7 +1090,6 @@ class BookMyShowBridge extends BridgeAbstract {
 	 */
 	private function generateEventHtml($event, $category){
 		switch ($category) {
-			// Currently not supported
 			case self::MOVIES:
 				$html = $this->generateMovieHtml($event);
 				break;
@@ -1076,22 +1113,6 @@ class BookMyShowBridge extends BridgeAbstract {
 		$html = '<h3>Venues</h3>';
 
 		foreach ($venues as $i => $venueData) {
-
-			// $date = "Not Accurately Available yet";
-
-			// if(isset($dates[$i])) {
-			// 	$dateData = $dates[$i];
-			// 	$startDate = $dateData['ShowDateDisplay'];
-			// 	$endDate = $dateData['ShowEndDateDisplay'];
-
-			// 	if($startDate!==$endDate){
-			// 		$date = $startEnd;
-			// 	}
-			// 	else{
-			// 		$date = "$startDate - $endDate";
-			// 	}
-			// }
-
 			$venueName = $venueData['VenueName'];
 			$address = $venueData['VenueAddress'];
 			$lat = $venueData['VenueLatitude'];
@@ -1108,9 +1129,12 @@ class BookMyShowBridge extends BridgeAbstract {
 	 * Generates a simple Table with event Data
 	 * @todo Add support for jsonGenre as a tags row
 	 */
-	private function generateEventDetailsTable($event){
+	private function generateEventDetailsTable($event, $headers = self::TABLE_HEADERS){
 		$table = '';
-		foreach (self::TABLE_HEADERS as $key => $header) {
+		foreach ($headers as $key => $header) {
+			if ($header == 'Language') {
+				$this->languages = array($event[$key]);
+			}
 			$table .= <<<EOT
 			<tr>
 				<th>$header</th>
@@ -1136,6 +1160,137 @@ EOT;
 EOT;
 	}
 
+	/**
+	 * Converts some movie details from child entries, such as language
+	 * into a single row item, either as a list, or as a Y/N
+	 */
+	private function generateInnerMovieDetails($data){
+		// Show list of languages and list of formats
+		$headers = array('EventLanguage', 'EventDimension');
+		// if any of these has a Y for any of the screenings, mark it as YES
+		$booleanHeaders = array(
+			'EventIsAtmosEnabled', 'IsMovieClubEnabled'
+		);
+
+		$items = array();
+
+		// Throw values inside $items[$headerName]
+		foreach ($data as $row) {
+			foreach ($headers as $header) {
+				$items[$header][] = $row[$header];
+			}
+			foreach ($booleanHeaders as $header) {
+				$items[$header][] = $row[$header];
+			}
+		}
+
+		// Remove duplicate values (if all screenings are 2D for eg)
+		foreach ($headers as $header) {
+			$items[$header] = array_unique($items[$header]);
+
+			if ($header == 'EventLanguage') {
+				$this->languages = $items[$header];
+			}
+		}
+
+		$html = '';
+
+		// Generate a list for first kind of entries
+		foreach ($headers as $header) {
+			$html .= self::INNER_MOVIE_HEADERS[$header] . ': ' . join(', ', $items[$header]) . '<br>';
+		}
+
+		// Put a yes for the boolean entries
+		foreach ($booleanHeaders as $header) {
+			if(in_array('Y', $items[$header])) {
+				$html .= self::INNER_MOVIE_HEADERS[$header] . ': Yes<br>';
+			}
+		}
+
+		return $html;
+	}
+
+	private function generateMovieHtml($eventGroup){
+		$data = $eventGroup['ChildEvents'][0];
+		$table = $this->generateEventDetailsTable($data, self::MOVIE_TABLE_HEADERS);
+
+		$imgsrc = sprintf(self::MOVIES_IMAGE_BASE_FORMAT, $data['EventImageCode']);
+
+		$url = $this->generateMovieUrl($eventGroup);
+
+		$innerHtml = $this->generateInnerMovieDetails($eventGroup['ChildEvents']);
+
+		return <<<EOT
+		<img title="Movie Poster" src="$imgsrc"></img>
+		<br>
+		$table
+		<br>
+		$innerHtml
+		<br>
+		More Details are available on the <a href="$url">BookMyShow website</a> and a trailer is available
+		<a href="${data['EventTrailerURL']}" title="Trailer URL">here</a>
+EOT;
+
+	}
+
+	/**
+	 * Generates a canonical movie URL
+	 */
+	private function generateMovieUrl($eventGroup){
+		return self::URI . '/movies/' . $eventGroup['EventURLTitle'] . $eventGroup['EventCode'];
+	}
+
+	private function generateMoviesData($eventGroup){
+		// Additional data picked up from the first Child Event
+		$data = $eventGroup['ChildEvents'][0];
+
+		return array(
+			'uri' => $this->generateMovieUrl($eventGroup),
+			'title' => $eventGroup['EventTitle'],
+			'timestamp' => $data['EventDate'],
+			'author' => 'BookMyShow',
+			'content' => $this->generateMovieHtml($eventGroup),
+			'enclosures' => array(
+				sprintf(self::MOVIES_IMAGE_BASE_FORMAT, $data['EventImageCode']),
+			),
+			// Sample Input = |ADVENTURE|ANIMATION|COMEDY|
+			// Sample Output = ['Adventure', 'Animation', 'Comedy']
+			'categories' => array_filter(
+				explode('|', ucwords(strtolower($eventGroup['EventGrpGenre']), '|'))
+			),
+			'uid' => $eventGroup['EventGroup']
+		);
+	}
+
+	private function generateEventData($event, $category){
+		if($category == self::MOVIES) {
+			return $this->generateMoviesData($event);
+		}
+
+		return $this->generateGenericEventData($event, $category);
+	}
+
+	/**
+	 * Takes an event data as array and returns data for RSS Post
+	 */
+	private function generateGenericEventData($event, $category){
+		return array(
+			'uri' => $event['FShareURL'],
+			'title' => $event['EventTitle'],
+			'timestamp' => $event['Event_dtmCreated'],
+			'author' => 'BookMyShow',
+			'content' => $this->generateEventHtml($event, $category),
+			'enclosures' => array(
+				$event['BannerURL'],
+			),
+			'categories' => array_merge(
+				array(self::CATEGORIES[$category]),
+				$event['GenreArray']
+			),
+			'uid' => $event['EventGroupCode']
+		);
+	}
+
 	public function collectData(){
 		$city = $this->getInput('city');
 		$category = $this->getInput('category');
@@ -1145,25 +1300,34 @@ EOT;
 
 		$data = json_decode(getContents($url, $headers), true);
 
-		foreach ($data['data']['BookMyShow']['arrEvent'] as $event) {
-			$this->items[] = array(
-				'uri' => $event['FShareURL'],
-				'title' => $event['EventTitle'],
-				'timestamp' => $event['Event_dtmCreated'],
-				'author' => 'BookMyShow',
-				'content' => $this->generateEventHtml($event, $category),
-				'enclosures' => array(
-					$event['BannerURL'],
-				),
-				'categories' => array_merge(
-					array(self::CATEGORIES[$category]),
-					$event['GenreArray']
-				),
-				'uid' => $event['EventGroupCode']
-			);
+		if ($category == self::MOVIES) {
+			$data = $data['moviesData']['BookMyShow']['arrEvents'];
+		} else {
+			$data = $data['data']['BookMyShow']['arrEvent'];
+		}
+
+		foreach ($data as $event) {
+			$item = $this->generateEventData($event, $category);
+			if ($this->matchesFilters($category)) {
+				$this->items[] = $item;
+			}
 		}
 	}
 
+	/**
+	 * Currently only checks if the language filter matches
+	 */
+	private function matchesFilters($category){
+		if ($this->getInput('language') !== 'all') {
+			$language = $this->getInput('language');
+			return in_array($language, $this->languages);
+		}
+		return true;
+	}
+
+	/**
+	 * Generates the RSS Feed title
+	 */
 	public function getName(){
 		$city = $this->getInput('city');
 		$category = $this->getInput('category');
@@ -1171,6 +1335,11 @@ EOT;
 			$categoryName = self::CATEGORIES[$category];
 			$cityNames = array_flip(self::CITIES);
 			$cityName = $cityNames[$city];
+			if ($this->getInput('language')!=='null') {
+				$l = $this->getInput('language');
+				// Sample: English Movies in Delhi
+				return "BookMyShow: $language $categoryName in $cityName";
+			}
 			return "BookMyShow: $categoryName in $cityName";
 		}
 
