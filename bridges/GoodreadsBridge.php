@@ -4,7 +4,7 @@ class GoodreadsBridge extends BridgeAbstract {
   const MAINTAINER = 'captn3m0';
   const NAME = 'Goodreads Bridge';
   const URI = 'https://www.goodreads.com/';
-  const CACHE_TIMEOUT = 0; // 30min
+  const CACHE_TIMEOUT = 1800; // 30min
   const DESCRIPTION = 'Various RSS feeds from Goodreads';
 
   const CONTEXT_AUTHOR_BOOKS = 'Books by Author';
@@ -15,7 +15,7 @@ class GoodreadsBridge extends BridgeAbstract {
       'author_url' => array(
         'name' => 'Link to author\'s page on Goodreads',
         'type' => 'text',
-        'required' => 'yes',
+        'required' => true,
         'title' => 'Should look somewhat like goodreads.com/author/show/',
         'pattern' => '^(https:\/\/)?(www.)?goodreads\.com\/author\/show\/\d+\..*$',
         'exampleValue' => 'https://www.goodreads.com/author/show/38550.Brandon_Sanderson'
@@ -78,10 +78,6 @@ class GoodreadsBridge extends BridgeAbstract {
     switch ($this->queriedContext) {
       case self::CONTEXT_AUTHOR_BOOKS:
         $this->collectAuthorBooks($this->getInput('author_url'));
-        break;
-
-      default:
-        throw new Exception("Invalid context", 1);
         break;
     }
   }
